@@ -22,42 +22,57 @@ API client SDK for Genuivo with TanStack Query hooks.
 
 ```
 src/
-├── index.ts                          # Main exports
-├── types.ts                          # QUERY_KEYS factory, config types
+├── index.ts                          # Main barrel exports (no subpath exports)
+├── types.ts                          # QUERY_KEYS, FirebaseIdToken, DEFAULT_STALE/GC_TIME
+├── types.test.ts
 ├── network/
-│   ├── GenuivoClient.ts              # HTTP client class (DI-based)
-│   └── GenuivoClient.test.ts
+│   ├── index.ts
+│   ├── StarterClient.ts              # HTTP client class (DI-based)
+│   ├── StarterClient.test.ts
+│   └── client-singleton.ts           # initialize/get/reset StarterClient singleton
 ├── hooks/
 │   ├── index.ts                      # Hook exports
+│   ├── useChat.ts                    # Mutation hook for AI chat endpoint
 │   ├── useHistories.ts               # Query + mutation hook for user histories
-│   └── useHistoriesTotal.ts          # Query hook for global total
+│   └── useHistoriesTotal.ts          # Query hook for global total (public)
 └── utils/
-    ├── index.ts                      # Utility exports
-    └── genuivo-helpers.ts            # createAuthHeaders, buildUrl, handleApiError
+    ├── index.ts
+    ├── starter-helpers.ts            # createAuthHeaders, createHeaders, buildUrl, handleApiError
+    └── starter-helpers.test.ts
 ```
 
 ## Commands
 
 ```bash
-bun run build          # Build ESM
+bun install            # Install deps (requires GitHub Packages read:packages auth)
+bun run build          # tsc (tsconfig.build.json) + scripts/fix-esm-imports.mjs
 bun run clean          # Remove dist/
-bun test               # Run Vitest tests (colocated *.test.ts files)
-bun run typecheck      # TypeScript check
-bun run lint           # Run ESLint
-bun run verify         # All checks + build (use before commit)
+bun run test:unit      # Run Vitest once (colocated *.test.ts). test:watch for watch
+bun run typecheck      # tsc --noEmit
+bun run lint           # ESLint over src/ (lint:fix to autofix)
+bun run format         # Prettier write (format:check to verify)
+bun run verify         # typecheck + test:unit + build (run before commit)
 bun run prepublishOnly # Clean + build (runs on publish)
 ```
 
+Use Bun only — do not use npm/yarn/pnpm. The configured test runner is Vitest
+(`bun run test:unit`); `bun test` happens to pass but is not the project runner.
+
 ## Key Concepts
 
-### GenuivoClient
+### StarterClient (class name, despite the `genuivo_client` package)
 
-HTTP client class constructed with `{ baseUrl, networkClient }`. Uses dependency injection via the `NetworkClient` interface from `@sudobility/types` — no direct fetch calls.
+HTTP client class constructed with `{ baseUrl, networkClient }`. Uses dependency injection via the `NetworkClient` interface from `@sudobility/types` — no direct fetch calls. Methods: `getUser`, `getHistories`, `createHistory`, `updateHistory`, `deleteHistory`, `chat`, `getHistoriesTotal`. Each returns `BaseResponse<T>` and runs a defensive `validateResponse` shape check.
+
+### Client singleton
+
+`initializeStarterClient({ baseUrl, networkClient })` must be called once at app startup; hooks call `getStarterClient()` internally and throw if it is not initialized. `resetStarterClient()` is for tests.
 
 ### Hooks
 
-- `useHistories(config)` — fetches user history list and provides `createHistory`, `updateHistory`, `deleteHistory` mutations with automatic query invalidation
-- `useHistoriesTotal(config)` — fetches global total (public endpoint)
+- `useHistories(userId, token, options?)` — fetches user history list and provides `createHistory`, `updateHistory`, `deleteHistory` mutations with automatic query invalidation; disabled unless both `userId` and `token` are truthy
+- `useHistoriesTotal(options?)` — fetches global total (public endpoint)
+- `useChat(userId, token)` — mutation hook; `chat(request)` posts to the AI endpoint; `token` may be null (unauthenticated)
 
 ### QUERY_KEYS
 
@@ -86,12 +101,12 @@ Dependency injection is central: `NetworkClient` interface is provided by the co
 
 ## Coding Patterns
 
-- `QUERY_KEYS` factory in `src/types.ts` provides type-safe cache keys for TanStack Query -- always use it for query keys
-- `GenuivoClient` class accepts `{ baseUrl, networkClient }` via constructor -- never use `fetch` directly inside this package
-- Hooks (`useHistories`, `useHistoriesTotal`) wrap TanStack Query and use `GenuivoClient` internally
+- `QUERY_KEYS` factory in `src/types.ts` provides type-safe cache keys for TanStack Query -- always use it for query keys (note: emitted keys are namespaced `'starter'`)
+- `StarterClient` class accepts `{ baseUrl, networkClient }` via constructor -- never use `fetch` directly inside this package
+- Hooks wrap TanStack Query and resolve `StarterClient` via the `getStarterClient()` singleton -- not via a passed-in client/config
 - `useHistories` combines query and mutations in a single hook — mutations automatically invalidate related queries after success
 - Default `staleTime` is 5 minutes and `gcTime` is 30 minutes -- respect these defaults unless there is a specific reason to override
-- Utility functions in `src/utils/genuivo-helpers.ts` handle auth headers (`createAuthHeaders`), URL construction (`buildUrl`), and API error handling (`handleApiError`)
+- Utility functions in `src/utils/starter-helpers.ts` handle auth headers (`createAuthHeaders` / `createHeaders`), URL construction (`buildUrl`), and API error handling (`handleApiError`)
 - `FirebaseIdToken` must be passed to all protected endpoint calls for authentication
 
 ## Gotchas
@@ -101,6 +116,10 @@ Dependency injection is central: `NetworkClient` interface is provided by the co
 - `FirebaseIdToken` is required for all authenticated endpoints; omitting it will result in 401/403 errors from the API
 - The `QUERY_KEYS` factory must be kept in sync with API route changes -- if a route path changes, update the corresponding key
 - This is a published npm package (`@sudobility/genuivo_client`) -- breaking changes require version bumps and coordination with consumers
+- Naming is inconsistent on purpose-for-now: package is `genuivo_client` but the class/singleton/helpers keep the `Starter*` / `starter-` prefix. Do not "fix" these in isolation — consumers import these exact names
+- Hooks throw `StarterClient not initialized` if `initializeStarterClient()` was not called at startup
+- Build emits extensionless ESM imports; `scripts/fix-esm-imports.mjs` (run by `bun run build`) rewrites them to `.js`. Don't bypass it or Node ESM consumers break
+- `@sudobility` scope resolves to GitHub Packages (`.npmrc`); installs need a `read:packages` token in `~/.npmrc`
 
 ## Git Workflow
 
